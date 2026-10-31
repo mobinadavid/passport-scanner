@@ -181,6 +181,13 @@ func detect(lines []string) (*layout, []string, error) {
 	for _, l := range []*layout{&td3, &td1, &td2} {
 		var m []string
 		for _, s := range lines {
+			// OCR often collapses repeated trailing fillers on the passport
+			// name line. Only pad a recognizable TD3 header; never infer a
+			// missing character in the checksummed data line.
+			if l.name == "TD3" && len(s) >= 30 && len(s) < l.width &&
+				strings.HasPrefix(s, "P<") && strings.Contains(s[5:], "<<") {
+				s += strings.Repeat("<", l.width-len(s))
+			}
 			if len(s) == l.width-1 {
 				s += "<"
 			} else if len(s) == l.width+1 && strings.HasSuffix(s, "<") {

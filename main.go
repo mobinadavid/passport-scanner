@@ -1,9 +1,10 @@
-// Tesseract on the unmodified image, followed by MRZ parsing and validation.
+// MRZ localization and edge-based rotation, then one OCR pass and parsing.
 // POST http://localhost:8082/mrz with multipart file field "image".
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,8 +25,15 @@ var sequence atomic.Int64
 
 func init() { sequence.Store(time.Now().UnixMilli()) }
 
-// recognize sends the uploaded bytes directly to Tesseract, once.
+// recognize locates and orients the MRZ, then recognizes text exactly once.
 func recognize(img []byte) (string, error) {
+	started := time.Now()
+	prepared, location, err := prepareMRZ(img)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("[mrz_image] edge=%s rotate_clockwise=%d bounds=%v elapsed=%s\n", location.Edge, location.Rotate, location.Bounds, time.Since(started))
+	img = prepared
 	client := gosseract.NewClient()
 	defer client.Close()
 	if prefix := os.Getenv("MRZ_TESSDATA_PREFIX"); prefix != "" {
@@ -105,7 +113,11 @@ func newHandler(ocr func([]byte) (string, error)) http.HandlerFunc {
 		fmt.Printf("[tesseract_raw requestId=%d jobId=%d] raw OCR text before parsing:\n%s\n", requestID, jobID, text)
 		if err != nil {
 			log.Printf("tesseract OCR failed: %v", err)
-			fail(http.StatusBadGateway, "tesseract could not recognize the image")
+			if errors.Is(err, errMRZNotFound) {
+				fail(http.StatusUnprocessableEntity, err.Error())
+			} else {
+				fail(http.StatusBadGateway, "tesseract could not recognize the image")
+			}
 			return
 		}
 		if strings.TrimSpace(text) == "" {

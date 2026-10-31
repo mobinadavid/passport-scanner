@@ -99,6 +99,7 @@ func TestUploadErrors(t *testing.T) {
 		{"missing image", nil, "", nil, 400},
 		{"empty image", []byte{}, "", nil, 400},
 		{"OCR failure", []byte("image"), "", errors.New("OCR unavailable"), 502},
+		{"MRZ not located", []byte("image"), "", errMRZNotFound, 422},
 		{"no text", []byte("image"), " \n", nil, 422},
 		{"no MRZ", []byte("image"), "unrecognized text", nil, 422},
 	} {

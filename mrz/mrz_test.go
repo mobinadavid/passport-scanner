@@ -62,3 +62,16 @@ func TestNamePadding(t *testing.T) {
 		}
 	}
 }
+
+func TestPassportNameLineCollapsedTrailingFillers(t *testing.T) {
+	d, err := Parse([]string{
+		"P<IRNIRANI<<FATEMEH<<<<<<<< KKK KKK KKK KKK KKK",
+		"$000028129IRN7902114F1910094<<<<<<<<<<<<<<06",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.GivenNames != "FATEMEH" || d.Surname != "IRANI" || !d.Valid() {
+		t.Fatalf("incorrect passport from cropped OCR: %+v", d)
+	}
+}
