@@ -111,3 +111,33 @@ func TestMRZCentralBandIsAmbiguous(t *testing.T) {
 		}
 	}
 }
+
+func TestPairMRZLines(t *testing.T) {
+	line := image.Rect(40, 300, 560, 315)
+	for _, tc := range []struct {
+		name  string
+		other image.Rectangle
+		want  bool
+	}{
+		{"aligned", image.Rect(45, 330, 555, 345), true},
+		{"short form field", image.Rect(40, 330, 260, 345), false},
+		{"distant text", image.Rect(40, 200, 560, 215), false},
+		{"misaligned text", image.Rect(180, 330, 700, 345), false},
+		{"same line", line, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, vertical := range []bool{false, true} {
+				a, b, w, h := line, tc.other, 600, 400
+				if vertical {
+					a = image.Rect(a.Min.Y, a.Min.X, a.Max.Y, a.Max.X)
+					b = image.Rect(b.Min.Y, b.Min.X, b.Max.Y, b.Max.X)
+					w, h = h, w
+				}
+				box, _, ok := pairMRZLines(a, b, w, h, vertical)
+				if ok != tc.want || ok && box != a.Union(b) {
+					t.Fatalf("vertical=%v: box=%v accepted=%v", vertical, box, ok)
+				}
+			}
+		})
+	}
+}

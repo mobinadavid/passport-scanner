@@ -2,16 +2,18 @@
 
 The server finds the MRZ-shaped text block, uses its nearest page edge to choose
 a rotation, crops and rotates that region, then runs Tesseract once. The OCR text
-is parsed into passport fields and ICAO checksums. No OSD or trained model is used.
+is parsed into passport fields and ICAO checksums. Orientation uses geometry,
+without OSD or an orientation classifier. Recognition uses the bundled MRZ
+Tesseract data (about 1.4 MB; see `tessdata/README.md` for source and license).
 
 Keep using the same `/mrz` upload endpoint. This runs in the Go service using
 Leptonica, which is already required by Tesseract; no Python or OpenCV is needed.
 
 Requires Go 1.22+, a C++ compiler, and Tesseract/Leptonica development libraries
-with English trained data installed. On Debian/Ubuntu:
+installed. On Debian/Ubuntu:
 
 ```sh
-sudo apt-get install g++ libtesseract-dev libleptonica-dev tesseract-ocr-eng
+sudo apt-get install g++ libtesseract-dev libleptonica-dev
 go run .
 ```
 
@@ -59,8 +61,14 @@ Checksum validity does not establish document authenticity or date validity.
 
 Optional environment settings:
 
-- `MRZ_TESSDATA_PREFIX`: custom Tesseract trained-data directory.
-- `MRZ_TESSERACT_LANG`: installed recognition language (Tesseract defaults to `eng`).
+- `MRZ_TESSDATA_PREFIX`: custom Tesseract trained-data directory. By default,
+  the service finds `tessdata` beside the executable or in the working directory.
+- `MRZ_TESSERACT_LANG`: recognition language, default `mrz`. Set `eng` to use
+  separately installed English data instead.
+- `MRZ_DEBUG=true`: print candidate line bounds and geometry.
+
+When deploying a compiled binary, copy the `tessdata` directory beside it or
+set `MRZ_TESSDATA_PREFIX`. No runtime download is performed.
 
 Run checks with `go test ./...`.
 
@@ -85,8 +93,11 @@ MRZ_TEST_IMAGE_PATH=/path/to/passport.png go test -run TestRecognizePassportImag
 
 The service downscales a preview to at most 600 pixels on the long side, converts
 it to grayscale, and runs blackhat morphology, Otsu thresholding, closing, and
-connected-component analysis with both wide and tall kernels. It selects a long,
-narrow candidate band (aspect ratio 5–20, covering at least 45% of its image axis).
+connected-component analysis with both wide and tall kernels. Individual lines
+must have aspect ratio 8–100 and cover at least 30% of their image axis. It pairs
+lines with similar lengths, strong overlap, and close spacing, then selects the
+longest pair near an edge. Keeping lines separate reduces merging with nearby
+page text, which previously caused valid MRZ blocks to be rejected.
 The candidate is a geometric guess; the parser and checksums validate the OCR.
 
 For horizontal bands, it compares top and bottom margins; for vertical bands,
@@ -98,8 +109,11 @@ it compares left and right margins. The correction is:
 - Right: 90 degrees clockwise.
 
 Only the detection preview is downscaled. OCR receives the original-resolution
-crop, rotated without interpolation and encoded as PNG. The terminal prints the
-detected edge, clockwise rotation, crop bounds, preparation time, and raw OCR text.
+crop. After the quarter-turn rotation, a confident pixel-based skew estimate
+corrects small tilts up to seven degrees. Background normalization reduces
+uneven illumination before encoding the grayscale crop as PNG. The terminal
+prints the detected edge, rotation, crop bounds, deskew angle/confidence,
+preparation time, and raw OCR text. Tesseract still runs exactly once.
 
 This assumes a close-up of an approximately axis-aligned passport data page with
 the MRZ along its bottom edge. It is not a general direction detector. Wide scene
@@ -111,6 +125,16 @@ service does not guess an orientation or try additional OCR passes.
 The parser tolerates collapsed trailing padding on recognizable passport name
 lines. It does not reconstruct missing characters in the checksummed data line.
 
-The real-image regression can use either supplied screenshot as
+To check multiple local photographs, including names as well as checksums for
+the supplied regression photos:
+
+```sh
+MRZ_TEST_PHOTO_PATHS=/path/to/photo1.jpg:/path/to/photo2.jpg go test -run TestPhotographedPassports -v .
+```
+
+Optionally set `MRZ_TEST_CROP_DIR` to an existing directory to save the prepared
+crops for inspection. Passport photographs are not bundled with the project.
+
+The original real-image regression can use either supplied screenshot as
 `MRZ_TEST_IMAGE_PATH`. Detection tests also cover all four edges, blank/invalid
 images, ambiguous central bands, and preservation of the cropped glyph pixels.

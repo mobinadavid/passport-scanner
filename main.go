@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"passport-tooles/mrz"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -32,20 +33,40 @@ func recognize(img []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fmt.Printf("[mrz_image] edge=%s rotate_clockwise=%d bounds=%v elapsed=%s\n", location.Edge, location.Rotate, location.Bounds, time.Since(started))
+	fmt.Printf("[mrz_image] edge=%s rotate_clockwise=%d bounds=%v deskew=%.2f deskew_confidence=%.2f elapsed=%s\n", location.Edge, location.Rotate, location.Bounds, location.Deskew, location.DeskewConfidence, time.Since(started))
 	img = prepared
 	client := gosseract.NewClient()
 	defer client.Close()
-	if prefix := os.Getenv("MRZ_TESSDATA_PREFIX"); prefix != "" {
+	language := os.Getenv("MRZ_TESSERACT_LANG")
+	if language == "" {
+		language = "mrz"
+	}
+	prefix := os.Getenv("MRZ_TESSDATA_PREFIX")
+	if prefix == "" && language == "mrz" {
+		// Prefer data shipped beside the binary; go run uses the project folder.
+		candidates := []string{"tessdata"}
+		if executable, err := os.Executable(); err == nil {
+			candidates = append([]string{filepath.Join(filepath.Dir(executable), "tessdata")}, candidates...)
+		}
+		for _, candidate := range candidates {
+			if info, err := os.Stat(filepath.Join(candidate, "mrz.traineddata")); err == nil && !info.IsDir() {
+				prefix = candidate
+				break
+			}
+		}
+		if prefix == "" {
+			return "", fmt.Errorf("bundled tessdata/mrz.traineddata not found; set MRZ_TESSDATA_PREFIX to its directory")
+		}
+	}
+	if prefix != "" {
 		if err := client.SetTessdataPrefix(prefix); err != nil {
 			return "", err
 		}
 	}
-	if language := os.Getenv("MRZ_TESSERACT_LANG"); language != "" {
-		if err := client.SetLanguage(language); err != nil {
-			return "", err
-		}
+	if err := client.SetLanguage(language); err != nil {
+		return "", err
 	}
+
 	if err := client.SetPageSegMode(gosseract.PSM_SINGLE_BLOCK); err != nil {
 		return "", err
 	}
