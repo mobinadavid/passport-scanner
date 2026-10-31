@@ -108,6 +108,8 @@ func Normalize(s string) string {
 	var b []byte
 	for _, r := range strings.ToUpper(s) {
 		switch {
+		case r == '$': // Tesseract commonly reads the passport letter S as a dollar sign.
+			b = append(b, 'S')
 		case r == ' ' || r == '\t' || r == '\r' || r == '\n':
 			continue
 		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '<':
@@ -237,9 +239,12 @@ func trimFill(s string) string { return strings.TrimRight(s, "<") }
 func splitName(s string) (surname, given string) {
 	s = trimFill(s)
 	parts := strings.SplitN(s, "<<", 2)
-	surname = strings.TrimSpace(strings.ReplaceAll(parts[0], "<", " "))
+	surname = strings.Join(strings.Fields(strings.ReplaceAll(parts[0], "<", " ")), " ")
 	if len(parts) == 2 {
-		given = strings.TrimSpace(strings.ReplaceAll(parts[1], "<", " "))
+		// Within given names, single fillers separate names; a double filler
+		// starts trailing padding. Ignore OCR garbage beyond that boundary.
+		givenPart := strings.SplitN(parts[1], "<<", 2)[0]
+		given = strings.Join(strings.Fields(strings.ReplaceAll(givenPart, "<", " ")), " ")
 	}
 	return
 }
@@ -269,8 +274,8 @@ func parseDate(s string, birth bool, now time.Time) (string, error) {
 
 // Parse takes the candidate lines an OCR engine produced (they may contain
 // noise lines, spaces, odd characters) and returns the parsed document.
-// The error is non-nil only if no MRZ block could be located at all; if the
-// lines were found but check digits fail, Parse still returns the document and
+// The error is non-nil if no MRZ block is found or fields are structurally
+// invalid. If only check digits fail, Parse still returns the document and
 // you decide with doc.Valid() / doc.Score().
 func Parse(raw []string) (*Document, error) {
 	var norm []string
@@ -346,8 +351,14 @@ func Parse(raw []string) (*Document, error) {
 	if d.Sex != "M" && d.Sex != "F" && d.Sex != "X" && d.Sex != "" {
 		d.Issues = append(d.Issues, fmt.Sprintf("sex %q is not M/F/X", d.Sex))
 	}
+	if len(d.Nationality) != 3 || strings.IndexFunc(d.Nationality, func(r rune) bool { return r < 'A' || r > 'Z' }) >= 0 {
+		d.Issues = append(d.Issues, "nationality is not a three-letter code")
+	}
 	if d.Surname == "" {
 		d.Issues = append(d.Issues, "empty surname")
+	}
+	if len(d.Issues) > 0 {
+		return nil, fmt.Errorf("invalid MRZ structure (OCR may have dropped or shifted characters): %s", strings.Join(d.Issues, "; "))
 	}
 	return d, nil
 }

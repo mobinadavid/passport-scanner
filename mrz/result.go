@@ -1,49 +1,96 @@
 package mrz
 
-import "fmt"
+import "strings"
 
-// Passport is the data we return to the client.
+// Checksum compares the digit printed in the MRZ with the calculated digit.
+// A missing or nonnumeric printed digit is represented as null.
+type Checksum struct {
+	Expected   *int `json:"expected"`
+	Calculated int  `json:"calculated"`
+	IsValid    bool `json:"isValid"`
+}
+
 type Passport struct {
-	FirstName      string `json:"first_name"`
-	LastName       string `json:"last_name"`
-	PassportNumber string `json:"passport_number"`
-	DateOfBirth    string `json:"date_of_birth"` // YYYY-MM-DD
-	Gender         string `json:"gender"`        // M / F / X
-	Nationality    string `json:"nationality"`   // 3-letter ICAO code, e.g. DEU
-	ExpiryDate     string `json:"expiry_date"`   // YYYY-MM-DD
+	FirstName              string    `json:"firstName"`
+	LastName               string    `json:"lastName"`
+	FullNameLatin          string    `json:"fullNameLatin"`
+	PassportNumber         string    `json:"passportNumber"`
+	BirthDate              string    `json:"birthDate"`
+	ExpiryDate             string    `json:"expiryDate"`
+	Gender                 string    `json:"gender"`
+	Nationality            string    `json:"nationality"`
+	MRZRawText             string    `json:"mrzRawText"`
+	PassportNumberChecksum *Checksum `json:"passportNumberChecksum"`
+	BirthDateChecksum      *Checksum `json:"birthDateChecksum"`
+	ExpiryDateChecksum     *Checksum `json:"expiryDateChecksum"`
+	PersonalNumberChecksum *Checksum `json:"personalNumberChecksum"`
+	CompositeChecksum      *Checksum `json:"compositeChecksum"`
+	AllChecksumsValid      bool      `json:"allChecksumsValid"`
 }
 
 func (d *Document) Passport() Passport {
-	return Passport{
-		FirstName:      d.GivenNames,
-		LastName:       d.Surname,
-		PassportNumber: d.DocNumber,
-		DateOfBirth:    d.Birth,
-		Gender:         d.Sex,
-		Nationality:    d.Nationality,
-		ExpiryDate:     d.Expiry,
+	passed, total := d.Score()
+	p := Passport{
+		FirstName: d.GivenNames, LastName: d.Surname,
+		FullNameLatin:  strings.TrimSpace(d.GivenNames + " " + d.Surname),
+		PassportNumber: d.DocNumber, BirthDate: d.Birth, ExpiryDate: d.Expiry,
+		Gender: d.Sex, Nationality: d.Nationality,
+		MRZRawText:        strings.Join(d.Lines, "\n"),
+		AllChecksumsValid: total > 0 && passed == total,
 	}
+	for _, c := range d.Checks {
+		calculated, _ := CheckDigit(c.Data)
+		check := &Checksum{Calculated: calculated, IsValid: c.OK}
+		if len(c.Got) == 1 && c.Got[0] >= '0' && c.Got[0] <= '9' {
+			digit := int(c.Got[0] - '0')
+			check.Expected = &digit
+		} else if c.Name == "personal number" && c.Got == "<" && strings.Trim(c.Data, "<") == "" {
+			// ICAO permits a filler instead of zero for an unused optional field.
+			zero := 0
+			check.Expected = &zero
+		}
+		switch c.Name {
+		case "document number":
+			p.PassportNumberChecksum = check
+		case "birth date":
+			p.BirthDateChecksum = check
+		case "expiry date":
+			p.ExpiryDateChecksum = check
+		case "personal number":
+			p.PersonalNumberChecksum = check
+		case "composite":
+			p.CompositeChecksum = check
+		}
+	}
+	return p
 }
 
-// Response parses the OCR lines and builds the JSON body every test server returns.
-// extra is merged in (raw OCR text, http status, ...).
-func Response(engine string, ms int64, lines []string, extra map[string]any) map[string]any {
-	out := map[string]any{"engine": engine, "ms": ms, "ocr_lines": lines, "parser_version": "2026-10-28-c"}
-	for k, v := range extra {
-		out[k] = v
-	}
+const (
+	StatusCompleted = 2
+	StatusFailed    = 3
+)
+
+// Result is the response envelope for both successful and failed requests.
+type Result struct {
+	RequestID      int64     `json:"requestId"`
+	JobID          int64     `json:"jobId"`
+	Status         int       `json:"status"`
+	PassportResult *Passport `json:"passportResult"`
+	GeneralResult  any       `json:"generalResult"`
+	Error          *string   `json:"error"`
+}
+
+func Failure(requestID, jobID int64, message string) Result {
+	return Result{RequestID: requestID, JobID: jobID, Status: StatusFailed, Error: &message}
+}
+
+// Response parses OCR text. Checksum failures are returned in the passport
+// result so callers can distinguish recognition from checksum validation.
+func Response(requestID, jobID int64, lines []string) Result {
 	d, err := Parse(lines)
 	if err != nil {
-		out["valid"] = false
-		out["error"] = err.Error()
-		return out
+		return Failure(requestID, jobID, err.Error())
 	}
-	p, t := d.Score()
-	out["valid"] = d.Valid()
-	out["checks_passed"] = fmt.Sprintf("%d/%d", p, t)
-	out["passport"] = d.Passport()
-	out["mrz_lines"] = d.Lines
-	out["checks"] = d.Checks
-	out["issues"] = d.Issues
-	return out
+	passport := d.Passport()
+	return Result{RequestID: requestID, JobID: jobID, Status: StatusCompleted, PassportResult: &passport}
 }
